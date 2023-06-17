@@ -4,6 +4,9 @@ import sqlite3
 import random
 import string
 import redis
+from validators import url as validate_url
+from flask_wtf.csrf import CSRFProtect
+from passlib.hash import bcrypt
 
 app = Flask(__name__)
 app.debug = True  # Enable debug mode for detailed error messages
@@ -13,8 +16,15 @@ redis_host = 'localhost'
 redis_port = 6379
 redis_client = redis.Redis(host=redis_host, port=redis_port, db=0)
 
-def create_table():
-    cursor.execute("CREATE TABLE IF NOT EXISTS website_health (id INTEGER PRIMARY KEY AUTOINCREMENT, url TEXT, status TEXT)")
+# Enable CSRF protection
+csrf = CSRFProtect(app)
+
+# Initialize database connection
+db = sqlite3.connect('website_health.db')
+cursor = db.cursor()
+
+# Create table if not exists
+cursor.execute("CREATE TABLE IF NOT EXISTS website_health (id INTEGER PRIMARY KEY AUTOINCREMENT, url TEXT, status TEXT)")
 
 def generate_random_string(length):
     letters = string.ascii_letters
@@ -50,29 +60,33 @@ def index():
     return render_template('index.html')
 
 @app.route('/check', methods=['POST'])
+@csrf.exempt  # Exclude CSRF protection for this route
 def check():
     website_url = request.form['website_url']
+    
+    if not validate_url(website_url):
+        return render_template('error.html', message='Invalid URL')
+
     health_status = check_health(website_url)
     security_status = perform_security_test(website_url)
+
     try:
         cursor.execute("INSERT INTO website_health (url, status) VALUES (?, ?)", (website_url, health_status))
         db.commit()
     except sqlite3.Error as e:
         print(f"An error occurred while inserting data into the database: {str(e)}")
 
-    # Store the result in Redis
     try:
         redis_client.set(website_url, health_status)
     except redis.exceptions.ConnectionError as e:
         print(f"Error connecting to Redis: {str(e)}")
+    
     redis_output = redis_client.get(website_url).decode('utf-8')
+    
     return render_template('result.html', website_url=website_url, health_status=health_status, redis_output=redis_output, security_test=security_status)
 
-if __name__== '__main__':
+if __name__ == '__main__':
     try:
-        db = sqlite3.connect('website_health.db')
-        cursor = db.cursor()
-        create_table()
         insert_random_data()
         app.run()
     except Exception as e:
